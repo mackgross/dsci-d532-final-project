@@ -1,0 +1,431 @@
+---
+title: "Building IMDb Top 250 Movies Database"
+author: "Mackenzie Ross"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+**Load Libraries**
+```{r}
+library(tidyverse)
+library(dplyr)
+library(RSQLite)
+library(DBI)
+```
+
+# Load and Clean Data
+
+## Read in IMDb Top 250 Data
+```{r}
+data <- read.csv('imdb_movies.csv')
+```
+
+## Preview Data
+```{r}
+head(data)
+```
+The column 'X' is not needed to build the database. The columns 'imbd_votes' and 'imbd_rating' have the b and d inverted, so those column titles need to be changed
+
+### Remove column 'X' and Change Mispelled Column Titles
+```{r}
+imdb250 <- data %>% select(-c(X)) %>% rename(imdb_votes = imbd_votes, imdb_rating = imbd_rating)
+head(imdb250)
+```
+
+There is an extra comma at the end of the list of writers in the third row and a writer named "Writers". We will use the gsub() function to remove any potential commas at the end of any of columns that have lists. We will also remove commas from the imdb_votes column and change it to a numeric column.
+
+```{r}
+# remove trailing commas
+imdb250$genre <- gsub(",$", "", imdb250$genre)
+imdb250$cast_id <- gsub(",$", "", imdb250$cast_id)
+imdb250$cast_name <- gsub(",$", "", imdb250$cast_name)
+imdb250$director_id <- gsub(",$", "", imdb250$director_id )
+imdb250$director_name <- gsub(",$", "", imdb250$director_name)
+imdb250$writer_id <- gsub(",$", "", imdb250$writer_id)
+imdb250$writer_name <- gsub(",$", "", imdb250$writer_name)
+```
+
+```{r}
+# remove "Writers," from writer_name column
+imdb250$writer_name <- gsub("Writers,", "", imdb250$writer_name)
+```
+
+```{r}
+# remove commas from imdb_votes column
+imdb250$imdb_votes <- gsub(",", "", imdb250$imdb_votes)
+
+# change column type
+imdb250$imdb_votes <- as.integer(imdb250$imdb_votes)
+```
+
+Change duration column to integer column
+```{r}
+durationdf <- imdb250 %>% select(duration)
+
+durationdf <- durationdf %>%
+  separate_wider_delim(duration, delim = " ", names_sep = "", too_few = "align_start")
+
+# the movie in row 195 is only 45 minutes but the value is in the hour column, move to minute column
+durationdf[195,'duration2'] <- durationdf[195,'duration1']
+durationdf[195, 'duration1'] <- "0"
+
+durationdf$duration1 <- gsub("h", "", durationdf$duration1)
+durationdf$duration2 <- gsub("m", "", durationdf$duration2)
+
+durationdf$duration1 <- as.integer(durationdf$duration1)
+durationdf$duration2 <- as.integer(durationdf$duration2)
+
+durationdf$duration1 <- 60*(durationdf$duration1)
+
+imdb250$duration <- rowSums(durationdf[,c('duration1', 'duration2')], na.rm = TRUE)
+```
+
+```{r}
+# re-print head to check for changes
+head(imdb250)
+```
+
+
+### Summarize Data
+```{r}
+summary(imdb250)
+```
+The only numeric columns are imdb_rank, year, and imdb_rating. All other columns are strings.
+
+### Identify Missing Values
+```{r}
+sapply(imdb250, function(x) sum(is.na(x)))
+```
+There are no missing values in the data frame. We can start preparing the data to be loaded in as tables.
+
+# Prepare Data to Fit Database Schema
+
+## Format Data for "movies" Table
+```{r}
+# create a data frame that contains the columns the belong in the movies table
+moviesdf <- imdb250 %>% select(movie_id, title, link, year, imdb_rank, imdb_votes, imdb_rating, mpaa_rating, duration, plot)
+```
+
+## Format Data for "genres" table
+```{r}
+# get unique genres
+allGenres <- imdb250$genre
+splitGenres <- c()
+for(k in 1:length(allGenres)) {
+  splitGenres = append(splitGenres, unlist(strsplit(allGenres[[k]], ",")))
+}
+genres <- list(unique(splitGenres))
+genresID <- c(0:20)
+genresdf <- data.frame(genresID, genres)
+colnames(genresdf) <- c('genre_id', 'genre')
+```
+
+## Format Data for "movie_genres" table
+
+```{r}
+# get paired movie_id and genre
+movieGenresdf <- imdb250 %>% select(movie_id, genre)
+
+# un-nest writer names
+movieGenresdf <- movieGenresdf %>%
+  separate_longer_delim(genre, delim = ',')
+
+# replace names with IDs from genresdf
+genres_to_ids <- movieGenresdf[, 'genre']
+
+row_count <- nrow(genresdf)
+
+for (i in 1:row_count) {
+  search_value <- genresdf[i, 2]
+  replace_value <- genresdf[i, 1]
+  
+  genres_to_ids <- sapply(genres_to_ids, function(x) {
+    x[x==search_value] <- replace_value
+    return(x)
+  })
+}
+
+movieGenresdf[,'genre_id'] <- genres_to_ids
+
+# drop genre column
+movieGenresdf <- movieGenresdf %>% select(-c(genre))
+```
+
+
+## Format Data for "actors" table
+```{r}
+# get unique actor names
+allActors <- imdb250$cast_name
+splitActors <- c()
+for(k in 1:length(allActors)) {
+  splitActors = append(splitActors, unlist(strsplit(allActors[[k]], ",")))
+}
+actors <- list(unique(splitActors))
+actorIDs <- c(0:16332)
+
+# save to data frame
+actorsdf <- data.frame(actorIDs, actors)
+
+# change column name
+colnames(actorsdf) <- c('actor_id', 'name')
+```
+
+## Format Data for "movie_actors" table
+```{r}
+# get paired movie_id and actor_name
+movieActorsdf <- imdb250 %>% select(movie_id, cast_name)
+
+# un-nest writer names
+movieActorsdf <- movieActorsdf %>%
+  separate_longer_delim(cast_name, delim = ',')
+
+# replace names with IDs from actorsdf
+names_to_ids <- movieActorsdf[, 'cast_name']
+
+row_count <- nrow(actorsdf)
+
+for (i in 1:row_count) {
+  search_value <- actorsdf[i, 2]
+  replace_value <- actorsdf[i, 1]
+  
+  names_to_ids <- sapply(names_to_ids, function(x) {
+    x[x==search_value] <- replace_value
+    return(x)
+  })
+}
+
+movieActorsdf[,'actor_id'] <- names_to_ids
+
+# drop writer_name column
+movieActorsdf <- movieActorsdf %>% select(-c(cast_name))
+```
+
+## Format Data for "directors" table
+```{r}
+# get unique director names
+allDirectors <- imdb250$director_name
+splitDirectors <- c()
+for(k in 1:length(allDirectors)) {
+  splitDirectors = append(splitDirectors, unlist(strsplit(allDirectors[[k]], ",")))
+}
+
+directors <- list(unique(splitDirectors))
+directorIDs <- c(0:176)
+
+directorsdf <- data.frame(directorIDs, directors)
+
+# change column name
+colnames(directorsdf) <- c('director_id', 'name')
+```
+
+## Format Data for "movie_directors" table
+```{r}
+# get paired movie_id and director_name
+movieDirectorsdf <- imdb250 %>% select(movie_id, director_name)
+
+# un-nest writer names
+movieDirectorsdf <- movieDirectorsdf %>%
+  separate_longer_delim(director_name, delim = ',')
+
+# replace names with IDs from directorsdf
+names_to_ids <- movieDirectorsdf[, 'director_name']
+
+row_count <- nrow(directorsdf)
+
+for (i in 1:row_count) {
+  search_value <- directorsdf[i, 2]
+  replace_value <- directorsdf[i, 1]
+  
+  names_to_ids <- sapply(names_to_ids, function(x) {
+    x[x==search_value] <- replace_value
+    return(x)
+  })
+}
+
+movieDirectorsdf[,'director_id'] <- names_to_ids
+
+# drop director_name column
+movieDirectorsdf <- movieDirectorsdf %>% select(-c(director_name))
+```
+
+## Format Data for "writers" table
+```{r}
+# get unique writer names
+allWriters <- imdb250$writer_name
+splitWriters <- c()
+for(k in 1:length(allWriters)) {
+  splitWriters = append(splitWriters, unlist(strsplit(allWriters[[k]], ",")))
+}
+writers <- list(unique(splitWriters))
+
+# create ID column
+writerIDs <- c(0:435)
+
+# create data frame
+writersdf <- data.frame(writer_id = writerIDs, name = writers)
+
+# change column name
+colnames(writersdf) <- c('writer_id', 'name')
+```
+
+## Format Data for "movie_writers" table
+```{r}
+# get paired movie_id and writer_name
+movieWritersdf <- imdb250 %>% select(movie_id, writer_name)
+
+# un-nest writer names
+movieWritersdf <- movieWritersdf %>%
+  separate_longer_delim(writer_name, delim = ',')
+
+# replace names with IDs from writersdf
+names_to_ids <- movieWritersdf[, 'writer_name']
+
+row_count <- nrow(writersdf)
+
+for (i in 1:row_count) {
+  search_value <- writersdf[i, 2]
+  replace_value <- writersdf[i, 1]
+  
+  names_to_ids <- sapply(names_to_ids, function(x) {
+    x[x==search_value] <- replace_value
+    return(x)
+  })
+}
+
+movieWritersdf[,'writer_id'] <- names_to_ids
+
+# drop writer_name column
+movieWritersdf <- movieWritersdf %>% select(-c(writer_name))
+```
+
+## Save all dataframes as CSV files
+```{r}
+write.csv(moviesdf, file = "movies.csv")
+write.csv(genresdf, file = "genres.csv")
+write.csv(movieGenresdf, file = "movie_genres.csv")
+write.csv(actorsdf, file = "actors.csv")
+write.csv(movieActorsdf, file = "movie_actors.csv")
+write.csv(directorsdf, file = "directors.csv")
+write.csv(movieDirectorsdf, file = "movie_directors.csv")
+write.csv(writersdf, file = "writers.csv")
+write.csv(movieWritersdf, file = "movie_writers.csv")
+```
+
+# Create Database and Add Tables
+
+## Create Connection and Database
+```{r}
+conn <- dbConnect(RSQLite::SQLite(), dbname = "IMDbTop250.db")
+```
+
+## Write Data to tables
+
+movies Table
+```{r eval=FALSE}
+# movie table
+dbWriteTable(conn, "movies", value = moviesdf, append = TRUE)
+```
+
+genres Table
+```{r eval=FALSE}
+# genres table
+dbWriteTable(conn, "genres", value = genresdf, append = TRUE)
+```
+
+movie_genres Table
+```{r eval=FALSE}
+# movie_genres table
+dbWriteTable(conn, "movie_genres", value = movieGenresdf, append = TRUE)
+```
+
+actors Table
+```{r eval=FALSE}
+# actors table
+dbWriteTable(conn, "actors", value = actorsdf, append = TRUE)
+```
+
+movie_actors Table
+```{r eval=FALSE}
+# movie_actors table
+dbWriteTable(conn, "movie_actors", value = movieActorsdf, append = TRUE)
+```
+
+directors Table
+```{r eval=FALSE}
+# directors table
+dbWriteTable(conn, "directors", value = directorsdf)
+```
+
+movie_directors Table
+```{r eval=FALSE}
+# movie_directors table
+dbWriteTable(conn, "movie_directors", value = movieDirectorsdf)
+```
+
+writers table
+```{r eval=FALSE}
+# writers table
+dbWriteTable(conn, "writers", value = writersdf)
+```
+
+movie_writers table
+```{r eval=FALSE}
+# movie_writers table
+dbWriteTable(conn, "movie_writers", value = movieWritersdf)
+```
+
+
+### Check that tables were added to the database
+```{r eval=FALSE}
+# list all tables
+dbListTables(conn)
+```
+
+# Query the Database
+
+## Query 1: List the first 10 movies
+```{r}
+dbGetQuery(conn, "SELECT * FROM movies LIMIT 10")
+```
+
+## Query 2: Get the average IMDb rating of the movies in the database
+```{r}
+dbGetQuery(conn, "SELECT AVG(imdb_rating) AS 'average_rating' FROM movies")
+```
+
+## Query 3: Return the title, release year, rank, IMDB rating, MPAA rating, and plot of movies directed by David Fincher
+```{r}
+dbGetQuery(conn, "SELECT title, directors.name AS 'director', year, imdb_rank, imdb_rating, mpaa_rating, duration, plot 
+                  FROM movies 
+                  INNER JOIN directors ON movie_directors.director_id = directors.director_id
+                  INNER JOIN movie_directors ON movies.movie_id = movie_directors.movie_id
+                  WHERE name = 'David Fincher'
+                  ORDER BY movies.imdb_rank")
+```
+
+## Query 4: Return the 10 writers with the most writing credits
+```{r}
+dbGetQuery(conn, "SELECT writers.writer_id, name, COUNT(*) AS 'number_of_credits'
+                  FROM writers
+                  INNER JOIN movie_writers ON writers.writer_id = movie_writers.writer_id
+                  GROUP BY name
+                  HAVING COUNT(*) > 1
+                  ORDER BY number_of_credits DESC
+                  LIMIT 10")
+```
+
+
+## Disconnect From Database
+```{r}
+dbDisconnect(conn)
+```
+
+
+# Sources
+https://medium.com/veri-analizi/replace-values-in-dataframe-from-another-dataframe-204b97700ba7
+
+
