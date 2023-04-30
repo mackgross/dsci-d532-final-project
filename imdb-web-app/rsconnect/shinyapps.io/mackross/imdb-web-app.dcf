@@ -1,0 +1,13 @@
+name: imdb-web-app
+title:
+username:
+account: mackross
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 8990668
+bundleId: 7154341
+url: https://mackross.shinyapps.io/imdb-web-app/
+when: 1682809750.87558
+lastSyncTime: 1682809750.87559
+asMultiple: FALSE
+asStatic: FALSE
