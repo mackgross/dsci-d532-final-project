@@ -11,4 +11,6 @@ The IMDb Top 250 Explorer web app allows users to find information about 250 hig
 - Create a dashboard with plots that summarize the MPAA ratings, genres, directors, writers, and actors in the database. The user will be able to change the parameters of the plots and tables.
 - Allow users to select a movie and view all relevant information that is stored in the database.
 
+**Link to Web App:** https://mackross.shinyapps.io/imdb-web-app/
+
 **Data Source:** https://www.kaggle.com/datasets/karkavelrajaj/imdb-top-250-movies
