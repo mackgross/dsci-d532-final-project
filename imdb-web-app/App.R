@@ -1,7 +1,7 @@
 # Title: app.R
 # Author: Mackenzie Ross
 # Description: Building the user interface and server of the "IMDb Top 250 Explorer" web app
-# Date Last Modified: 29 April 2023
+# Date Last Modified: 16 May 2023
 
 # import necessary libraries
 library(shiny)
@@ -26,10 +26,10 @@ conn <- dbConnect(RSQLite::SQLite(), dbname = "IMDbTop250.db")
 #                   UID = "adt_final", PWD = "final", host = "localhost", Port = 3306)
 
 # get list of movies, directors, writers, and actors
-movieChoices <- dbGetQuery(conn, "SELECT title FROM movies;")
-directorChoices <- dbGetQuery(conn, "SELECT name FROM directors;")
-writerChoices <- dbGetQuery(conn, "SELECT name FROM writers;")
-actorChoices <- dbGetQuery(conn, "SELECT name FROM actors INNER JOIN movie_actors ON actors.actor_id=movie_actors.actor_id INNER JOIN movies ON movie_actors.movie_id=movies.movie_id ORDER BY movies.imdb_rank;")
+movieChoices <- dbGetQuery(conn, "SELECT title FROM movies ORDER BY title;")
+directorChoices <- dbGetQuery(conn, "SELECT name FROM directors ORDER BY name;")
+writerChoices <- dbGetQuery(conn, "SELECT name FROM writers ORDER BY name;")
+actorChoices <- dbGetQuery(conn, "SELECT name FROM actors ORDER BY name;")
 
 # define user interface (UI) for app
 ui <- fluidPage(theme = shinytheme("sandstone"),
@@ -180,7 +180,7 @@ server <- function(input, output, session) {
   
   # actor selection output
   actedMovies <- reactive({
-    acted <- dbGetQuery(conn, paste0("SELECT title, imdb_rank FROM movies INNER JOIN movie_actors ON movies.movie_id = movie_actors.movie_id INNER JOIN actors ON movie_actors.actor_id = actors.actor_id WHERE actors.name = '", input$actorSel, "';"))
+    acted <- dbGetQuery(conn, paste0("SELECT title, imdb_rank FROM movies INNER JOIN movie_actors ON movies.movie_id = movie_actors.movie_id INNER JOIN actors ON movie_actors.actor_id = actors.actor_id WHERE actors.name = \"", input$actorSel, "\";"))
     acted
   })
   
